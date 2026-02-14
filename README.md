@@ -1,46 +1,47 @@
-# OOB Governance MVP
+# OOB Governance MVP (Air-Gapped AI Edition)
 
-Minimal FastAPI + Postgres service that ingests syslog-style lines, stores observations, and raises drift alerts for newly observed ASNs.
+This repo runs an offline governance stack with:
+- FastAPI governance engine (`app`)
+- Postgres state store (`db`)
+- Local RF classifier service (`sdr-ai`)
+- Local LLM triage service (`local-llm`)
 
-## Requirements
-- Docker + Docker Compose
-- (Optional local dev) Python 3.11+
+No internet dependency is required at runtime after images/models are loaded.
 
-## Start the stack
+## Hardware profile
+- CPU: 8+ cores recommended
+- RAM: 16GB-32GB recommended
+- GPU: Optional but recommended (Jetson/T4/A2 class) for `sdr-ai` and local LLM inference
+
+## Start
 ```bash
 docker compose up --build
 ```
 
-App endpoints:
-- API: `http://localhost:8000`
-- Postgres: `localhost:5432` (`oob/oob`, db `oob`)
-
-## Seed baseline data
-In another shell after startup:
+## Seed
 ```bash
 docker compose exec app python scripts/seed.py
 ```
 
-## Run smoke test (end-to-end)
-This command starts compose, seeds, ingests 20 messages, validates fleet and drift alerts, then tears down:
+## Smoke test
 ```bash
 ./scripts/smoke_test.sh
 ```
 
-## Example API calls
+## API quick checks
 Health:
 ```bash
 curl -s http://localhost:8000/health
 ```
 
-Ingest one syslog line:
+Ingest syslog (with optional I/Q samples for RF-ML spoof detection):
 ```bash
 curl -s -X POST http://localhost:8000/ingest/syslog \
   -H 'content-type: application/json' \
-  -d '{"line":"<134>1 2026-01-01T00:00:00Z edge-router bgp - - - site=site-a link=wan1 asn=65001"}'
+  -d '{"line":"<134>1 2026-01-01T00:00:00Z edge-router bgp - - - site=site-a link=wan1 asn=65001","iq_samples":[0.1,0.5,-0.2,0.9,0.4]}'
 ```
 
-Fleet summary:
+Fleet:
 ```bash
 curl -s http://localhost:8000/fleet
 ```
@@ -50,21 +51,34 @@ Alerts:
 curl -s http://localhost:8000/alerts
 ```
 
-## Migrations
-Alembic is used with one initial migration.
+LLM triage:
+```bash
+curl -s -X POST http://localhost:8000/triage \
+  -H 'content-type: application/json' \
+  -d '{"question":"Why is Site A high risk?"}'
+```
 
-Apply migrations manually:
+## AI components
+1. **Local Signal Intelligence (RF-ML)**
+   - `sdr-ai` runs a lightweight classifier over raw I/Q samples.
+   - Returns `authentic` vs `clone_suspected` with confidence score.
+
+2. **Behavioral Anomaly Detection (Time-Series AI)**
+   - `app.state_engine` trains an IsolationForest from local historical telemetry.
+   - Generates `behavioral_anomaly` drift events when outliers occur.
+
+3. **Semantic Search & Triage (Local LLM)**
+   - `/triage` assembles recent drift/syslog context and queries local Ollama.
+   - Keeps data local; no external APIs.
+
+## Migrations
 ```bash
 docker compose exec app alembic upgrade head
 ```
 
-The container start command already runs `alembic upgrade head` before launching Uvicorn.
+The app container runs this automatically at startup.
 
 ## Tests
 ```bash
 pytest -q
 ```
-
-## Scheduler safety
-- APScheduler starts only when `ENABLE_SCHEDULER=true`.
-- Scheduler startup is guarded by a Postgres advisory lock (`pg_try_advisory_lock`) so only one process runs it, preventing duplicate runs under reload/multi-worker scenarios.

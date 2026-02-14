@@ -18,8 +18,36 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      sdr-ai:
+        condition: service_started
+      local-llm:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql+psycopg2://oob:oob@db:5432/oob
       ENABLE_SCHEDULER: "true"
+      SDR_AI_URL: http://sdr-ai:8100
+      LLM_URL: http://local-llm:11434
+      LLM_MODEL: llama3.1:8b-instruct-q4_K_M
     ports:
       - "8000:8000"
+
+  sdr-ai:
+    build:
+      context: .
+      dockerfile: services/sdr_ai/Dockerfile
+    ports:
+      - "8100:8100"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  local-llm:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./local_models:/root/.ollama
